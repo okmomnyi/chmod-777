@@ -61,6 +61,7 @@ function normalizeMessages(messages: Message[]): OpenAIMessage[] {
       return {
         role: m.role,
         content: m.content,
+        ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.name ? { name: m.name } : {}),
       };
@@ -77,6 +78,7 @@ function normalizeMessages(messages: Message[]): OpenAIMessage[] {
       return {
         role: m.role,
         content: textParts || null,
+        ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.name ? { name: m.name } : {}),
       };
@@ -86,7 +88,11 @@ function normalizeMessages(messages: Message[]): OpenAIMessage[] {
     const c = m.content;
     if (typeof c === "object" && "type" in c) {
       if (c.type === "text") {
-        return { role: m.role, content: c.text };
+        return {
+          role: m.role,
+          content: c.text,
+          ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+        };
       }
       if (c.type === "tool_result") {
         return {

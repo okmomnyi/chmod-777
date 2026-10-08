@@ -32,6 +32,8 @@ export interface Message {
   /** Present when role === "tool" */
   tool_call_id?: string;
   name?: string;
+  /** Present on assistant messages that requested tools. */
+  tool_calls?: ToolCall[];
 }
 
 // OpenAI-compatible tool definition

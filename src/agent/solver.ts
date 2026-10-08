@@ -146,11 +146,10 @@ export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
       messages.push({
         role: "assistant",
         content: response.content ?? "",
-        // Attach tool_calls as metadata for downstream serialisation
-        ...(response.toolCalls.length > 0
-          ? { tool_calls: response.toolCalls }
-          : {}),
-      } as Message & { tool_calls?: unknown });
+        // Preserve the assistant's tool calls so providers receive the
+        // matching call IDs when the tool results are sent on the next turn.
+        ...(response.toolCalls.length > 0 ? { tool_calls: response.toolCalls } : {}),
+      });
 
       // Execute each tool call
       for (const tc of response.toolCalls) {
