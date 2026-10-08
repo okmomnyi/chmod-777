@@ -18,7 +18,7 @@ import { createSandbox } from "./container.js";
 import { executeTool } from "./executor.js";
 import type { SolverConfig, SolverResult, StopReason } from "./types.js";
 
-const DEFAULT_MAX_STEPS = 12;
+const DEFAULT_MAX_STEPS = 24;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
 const DEFAULT_MAX_OUTPUT_CHARS = 2048;
 const SANDBOX_IMAGE = "ctf-sandbox:latest";
