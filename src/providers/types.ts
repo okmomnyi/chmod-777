@@ -70,7 +70,7 @@ export interface ChatResponse {
 }
 
 /** Tier controls which model class to use */
-export type ModelTier = "cheap" | "claude";
+export type ModelTier = "cheap" | "smart";
 
 export interface ChatOptions {
   messages: Message[];

@@ -1,6 +1,6 @@
 /**
  * Base adapter for any OpenAI-compatible chat completion API.
- * Both AgentRouter and OpenRouter extend this.
+ * OpenRouter and NVIDIA NIM extend this.
  */
 import type {
   ChatOptions,
@@ -152,9 +152,7 @@ export class OpenAICompatClient implements LLMClient {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-    } finally {
-      clearTimeout(timer);
-    }
+    } finally { clearTimeout(timer); }
 
     if (!response.ok) {
       const errText = await response.text();

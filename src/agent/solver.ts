@@ -51,6 +51,7 @@ The flag matches this regex: ${flagRegex}
 - Use the provided tools to explore files, run commands, and interact with services.
 - Challenge files are at /work/files/ (read-only). Write scratch files to /work/scratch/.
 - When you find the flag in tool output, output it clearly.
+- Never submit a flag to CTFd. The operator submits verified flags manually.
 - Think step by step. Explain your reasoning before each tool call.
 - Do NOT guess the flag — it must appear in actual tool output.
 - You have a limited number of steps; be efficient.`;
@@ -136,17 +137,8 @@ export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
 
       // No tool calls — model returned a text answer
       if (response.toolCalls.length === 0) {
-        // Check if the text itself contains the flag (shouldn't per instructions,
-        // but capture it as low-confidence)
-        const textFlag = extractFlag(response.content ?? "", cfg.flagRegex);
-        if (textFlag) {
-          flagCandidate = textFlag;
-          evidence = `[model text — not tool output]\n${response.content}`;
-          stopReason = "found";
-        } else {
-          // Model is done but no flag found
-          stopReason = "max_steps"; // treat as exhausted
-        }
+        // Only actual tool output is accepted as flag evidence.
+        stopReason = "max_steps";
         break;
       }
 

@@ -9,8 +9,8 @@
 import pLimit from "p-limit";
 import type { ChatOptions, ChatResponse, LLMClient } from "./types.js";
 import { loadConfig } from "./config.js";
-import { AgentRouterClient } from "./agentrouter.js";
 import { OpenRouterClient } from "./openrouter.js";
+import { NvidiaClient } from "./nvidia.js";
 import { SpendTracker, SpendCapExceededError } from "./spend-tracker.js";
 
 function isRetryableError(err: unknown): boolean {
@@ -44,18 +44,8 @@ export class ProviderRouter implements LLMClient {
     const slots: ProviderSlot[] = [];
 
     // Only add a provider if it is fully configured (no placeholders)
-    const isConfigured = (p: typeof cfg.providers.agentrouter) =>
-      !p.apiKey.includes("PLACEHOLDER") &&
-      !p.baseUrl.includes("PLACEHOLDER");
-
-    if (isConfigured(cfg.providers.agentrouter)) {
-      slots.push({
-        client: new AgentRouterClient(cfg.providers.agentrouter),
-        limiter: pLimit(cfg.providers.agentrouter.maxConcurrency),
-      });
-    } else {
-      console.warn("[router] agentrouter not configured — skipping");
-    }
+    const isConfigured = (p: { apiKey: string; baseUrl: string }) =>
+      Boolean(p.apiKey) && !p.apiKey.includes("PLACEHOLDER") && !p.baseUrl.includes("PLACEHOLDER");
 
     if (isConfigured(cfg.providers.openrouter)) {
       slots.push({
@@ -63,12 +53,21 @@ export class ProviderRouter implements LLMClient {
         limiter: pLimit(cfg.providers.openrouter.maxConcurrency),
       });
     } else {
-      console.warn("[router] openrouter not configured — skipping");
+      console.warn("[router] OpenRouter API key missing — skipping");
+    }
+
+    if (isConfigured(cfg.providers.nvidia)) {
+      slots.push({
+        client: new NvidiaClient(cfg.providers.nvidia),
+        limiter: pLimit(cfg.providers.nvidia.maxConcurrency),
+      });
+    } else {
+      console.warn("[router] NVIDIA API key missing — skipping");
     }
 
     if (slots.length === 0) {
       throw new Error(
-        "No providers configured. Fill in model IDs in config/providers.json"
+        "No LLM providers configured. Set OPENROUTER_API_KEY or NVIDIA_API_KEY."
       );
     }
 
@@ -127,7 +126,7 @@ export class ProviderRouter implements LLMClient {
 
   /**
    * Attempt a call with automatic tier escalation.
-   * First tries `cheap`, then escalates to `claude` on failure.
+   * First tries `cheap`, then escalates to `smart` on failure.
    */
   async chatWithEscalation(
     options: ChatOptions,
@@ -145,10 +144,10 @@ export class ProviderRouter implements LLMClient {
         if (escalations >= maxEscalations) throw err;
 
         console.warn(
-          `[router] Escalating to claude tier after failure: ${(err as Error).message}`
+          `[router] Escalating to smart tier after failure: ${(err as Error).message}`
         );
         escalations++;
-        currentOptions = { ...currentOptions, tier: "claude" };
+        currentOptions = { ...currentOptions, tier: "smart" };
       }
     }
   }

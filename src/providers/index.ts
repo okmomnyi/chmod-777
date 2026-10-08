@@ -2,3 +2,4 @@ export type { LLMClient, ChatOptions, ChatResponse, Message, ToolDefinition, Too
 export { ProviderRouter, getRouter } from "./router.js";
 export { SpendTracker, SpendCapExceededError } from "./spend-tracker.js";
 export { loadConfig } from "./config.js";
+export { NvidiaClient } from "./nvidia.js";

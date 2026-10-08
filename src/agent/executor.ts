@@ -94,6 +94,16 @@ export async function executeTool(
         }
 
         const method = String(args.method ?? "GET").toUpperCase();
+        const normalizedPath = decodeURIComponent(new URL(url).pathname).toLowerCase();
+        if (
+          !["GET", "HEAD", "OPTIONS"].includes(method) &&
+          /(?:^|\/)challenges(?:\/\d+)?\/attempt(?:\/|$)/.test(normalizedPath)
+        ) {
+          return {
+            output: "Error: flag submission is disabled; submit verified flags manually on CTFd.",
+            truncated: false,
+          };
+        }
         const headers = (args.headers as Record<string, string>) ?? {};
         const body = args.body !== undefined ? String(args.body) : undefined;
 
@@ -101,7 +111,7 @@ export async function executeTool(
           method,
           headers,
           body: body ?? undefined,
-          redirect: "follow",
+          redirect: "manual",
         });
 
         const responseText = await response.text();

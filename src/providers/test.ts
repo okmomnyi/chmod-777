@@ -1,57 +1,30 @@
-/**
- * Smoke-test both providers with a trivial "say hello" call.
- * Run with: npm run test:providers
- *
- * Skips any provider whose cheap model is still a placeholder.
- */
+/** Smoke-test configured OpenRouter and NVIDIA NIM endpoints. */
 import { loadConfig } from "./config.js";
-import { AgentRouterClient } from "./agentrouter.js";
 import { OpenRouterClient } from "./openrouter.js";
+import { NvidiaClient } from "./nvidia.js";
 import type { LLMClient } from "./types.js";
 
-async function testProvider(name: string, client: LLMClient): Promise<void> {
-  console.log(`\n── Testing ${name} ──`);
+async function testProvider(client: LLMClient): Promise<void> {
+  console.log(`\n── Testing ${client.name} ──`);
   try {
-    const resp = await client.chat({
-      messages: [
-        {
-          role: "user",
-          content: `Reply with exactly: "hello from ${name}"`,
-        },
-      ],
+    const response = await client.chat({
+      messages: [{ role: "user", content: `Reply with exactly: hello from ${client.name}` }],
       tier: "cheap",
       maxTokens: 64,
     });
-    console.log(`✅ ${name} OK`);
-    console.log(`   model:   ${resp.model}`);
-    console.log(`   content: ${resp.content}`);
-    console.log(`   tokens:  ${resp.tokensUsed}`);
-    console.log(`   finish:  ${resp.finishReason}`);
+    console.log(`✅ ${client.name} OK — model ${response.model}; tokens ${response.tokensUsed}`);
   } catch (err) {
-    console.error(`❌ ${name} FAILED: ${(err as Error).message}`);
+    console.error(`❌ ${client.name} FAILED: ${(err as Error).message}`);
   }
 }
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
-  console.log("providers.json loaded ✓\n");
+  if (cfg.providers.openrouter.apiKey) await testProvider(new OpenRouterClient(cfg.providers.openrouter));
+  else console.log("── OpenRouter: skipped (OPENROUTER_API_KEY is not set) ──");
 
-  const ar = cfg.providers.agentrouter;
-  const or = cfg.providers.openrouter;
-
-  if (!ar.models.cheap.includes("PLACEHOLDER")) {
-    await testProvider("agentrouter", new AgentRouterClient(ar));
-  } else {
-    console.log("── agentrouter: skipped (cheap model not configured) ──");
-  }
-
-  if (!or.models.cheap.includes("PLACEHOLDER")) {
-    await testProvider("openrouter", new OpenRouterClient(or));
-  } else {
-    console.log("── openrouter:  skipped (cheap model not configured) ──");
-  }
-
-  console.log("\nDone.");
+  if (cfg.providers.nvidia.apiKey) await testProvider(new NvidiaClient(cfg.providers.nvidia));
+  else console.log("── NVIDIA: skipped (NVIDIA_API_KEY is not set) ──");
 }
 
 main().catch((err) => {

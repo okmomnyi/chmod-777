@@ -1,19 +1,9 @@
-/**
- * SQLite persistence layer using better-sqlite3.
- *
- * Schema:
- *   runs          — one row per /start_run invocation
- *   challenges    — mirrored from CTFd (name, category, etc.)
- *   results       — solver outcomes per run+challenge
- */
-import Database from "better-sqlite3";
-import { mkdirSync } from "fs";
-import { join } from "path";
-
-const DB_PATH = join(process.cwd(), "data", "ctf-bot.db");
+/** Neon/PostgreSQL persistence layer. Set DATABASE_URL to a Neon pooled URL. */
+import { Pool } from "pg";
+import "dotenv/config";
 
 export type RunStatus = "running" | "stopped" | "done";
-export type ChallengeStatus = "queued" | "running" | "found" | "failed";
+export type ChallengeStatus = "queued" | "running" | "found" | "failed" | "unverified";
 
 export interface Run {
   id: string;
@@ -22,7 +12,7 @@ export interface Run {
   status: RunStatus;
   startedAt: number;
   stoppedAt: number | null;
-  createdBy: number; // Telegram user ID
+  createdBy: number;
 }
 
 export interface ChallengeRecord {
@@ -48,161 +38,194 @@ export interface ResultRecord {
   error: string | null;
 }
 
-let _db: Database.Database | null = null;
+let pool: Pool | null = null;
+let schemaReady: Promise<void> | null = null;
 
-function getDb(): Database.Database {
-  if (_db) return _db;
-
-  mkdirSync(join(process.cwd(), "data"), { recursive: true });
-  _db = new Database(DB_PATH);
-  _db.pragma("journal_mode = WAL");
-  _db.pragma("foreign_keys = ON");
-  migrate(_db);
-  return _db;
+function getPool(): Pool {
+  if (pool) return pool;
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("DATABASE_URL is required (use your Neon pooled connection string).");
+  pool = new Pool({
+    connectionString,
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 15_000,
+  });
+  pool.on("error", (err) => console.error("[db] PostgreSQL pool error:", err.message));
+  return pool;
 }
 
-function migrate(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS runs (
-      id          TEXT PRIMARY KEY,
-      ctfBaseUrl  TEXT NOT NULL,
-      flagRegex   TEXT NOT NULL,
-      status      TEXT NOT NULL DEFAULT 'running',
-      startedAt   INTEGER NOT NULL,
-      stoppedAt   INTEGER,
-      createdBy   INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS challenges (
-      id          INTEGER PRIMARY KEY,
-      name        TEXT NOT NULL,
-      category    TEXT NOT NULL DEFAULT '',
-      value       INTEGER NOT NULL DEFAULT 0,
-      description TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS results (
-      runId         TEXT NOT NULL,
-      challengeId   INTEGER NOT NULL,
-      status        TEXT NOT NULL DEFAULT 'queued',
-      flagCandidate TEXT,
-      evidence      TEXT,
-      verified      INTEGER NOT NULL DEFAULT 0,
-      confidence    TEXT NOT NULL DEFAULT 'none',
-      stepsUsed     INTEGER NOT NULL DEFAULT 0,
-      stopReason    TEXT NOT NULL DEFAULT '',
-      startedAt     INTEGER NOT NULL,
-      finishedAt    INTEGER,
-      error         TEXT,
-      PRIMARY KEY (runId, challengeId),
-      FOREIGN KEY (runId) REFERENCES runs(id)
-    );
-  `);
-}
-
-// ─── Runs ─────────────────────────────────────────────────────────────────────
-
-export function insertRun(run: Run): void {
-  getDb().prepare(`
-    INSERT INTO runs (id, ctfBaseUrl, flagRegex, status, startedAt, stoppedAt, createdBy)
-    VALUES (@id, @ctfBaseUrl, @flagRegex, @status, @startedAt, @stoppedAt, @createdBy)
-  `).run(run);
-}
-
-export function updateRunStatus(id: string, status: RunStatus, stoppedAt?: number): void {
-  getDb().prepare(`
-    UPDATE runs SET status = @status, stoppedAt = @stoppedAt WHERE id = @id
-  `).run({ id, status, stoppedAt: stoppedAt ?? null });
-}
-
-export function getRun(id: string): Run | undefined {
-  return getDb().prepare(`SELECT * FROM runs WHERE id = ?`).get(id) as Run | undefined;
-}
-
-export function getActiveRun(): Run | undefined {
-  return getDb().prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY startedAt DESC LIMIT 1`).get() as Run | undefined;
-}
-
-// ─── Challenges ───────────────────────────────────────────────────────────────
-
-export function upsertChallenge(c: ChallengeRecord): void {
-  getDb().prepare(`
-    INSERT INTO challenges (id, name, category, value, description)
-    VALUES (@id, @name, @category, @value, @description)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      category = excluded.category,
-      value = excluded.value,
-      description = excluded.description
-  `).run(c);
-}
-
-export function getChallenge(id: number): ChallengeRecord | undefined {
-  return getDb().prepare(`SELECT * FROM challenges WHERE id = ?`).get(id) as ChallengeRecord | undefined;
-}
-
-// ─── Results ─────────────────────────────────────────────────────────────────
-
-export function upsertResult(r: ResultRecord): void {
-  getDb().prepare(`
-    INSERT INTO results (runId, challengeId, status, flagCandidate, evidence, verified,
-      confidence, stepsUsed, stopReason, startedAt, finishedAt, error)
-    VALUES (@runId, @challengeId, @status, @flagCandidate, @evidence, @verified,
-      @confidence, @stepsUsed, @stopReason, @startedAt, @finishedAt, @error)
-    ON CONFLICT(runId, challengeId) DO UPDATE SET
-      status = excluded.status,
-      flagCandidate = excluded.flagCandidate,
-      evidence = excluded.evidence,
-      verified = excluded.verified,
-      confidence = excluded.confidence,
-      stepsUsed = excluded.stepsUsed,
-      stopReason = excluded.stopReason,
-      finishedAt = excluded.finishedAt,
-      error = excluded.error
-  `).run({ ...r, verified: r.verified ? 1 : 0 });
-}
-
-export function getResults(runId: string): ResultRecord[] {
-  type RawResult = Omit<ResultRecord, "verified"> & { verified: number };
-  return (getDb().prepare(`SELECT * FROM results WHERE runId = ?`).all(runId) as RawResult[])
-    .map((r) => ({ ...r, verified: r.verified === 1 }));
-}
-
-export function getStatusCounts(runId: string): Record<ChallengeStatus, number> {
-  const rows = getDb().prepare(`
-    SELECT status, COUNT(*) as cnt FROM results WHERE runId = ? GROUP BY status
-  `).all(runId) as Array<{ status: string; cnt: number }>;
-
-  const counts: Record<ChallengeStatus, number> = { queued: 0, running: 0, found: 0, failed: 0 };
-  for (const row of rows) {
-    counts[row.status as ChallengeStatus] = row.cnt;
+async function ensureSchema(): Promise<void> {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      await getPool().query(`
+        CREATE TABLE IF NOT EXISTS runs (
+          id TEXT PRIMARY KEY,
+          ctf_base_url TEXT NOT NULL,
+          flag_regex TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'running',
+          started_at BIGINT NOT NULL,
+          stopped_at BIGINT,
+          created_by BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS challenges (
+          id BIGINT PRIMARY KEY,
+          name TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT '',
+          value INTEGER NOT NULL DEFAULT 0,
+          description TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS results (
+          run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          challenge_id BIGINT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'queued',
+          flag_candidate TEXT,
+          evidence TEXT,
+          verified BOOLEAN NOT NULL DEFAULT FALSE,
+          confidence TEXT NOT NULL DEFAULT 'none',
+          steps_used INTEGER NOT NULL DEFAULT 0,
+          stop_reason TEXT NOT NULL DEFAULT '',
+          started_at BIGINT NOT NULL,
+          finished_at BIGINT,
+          error TEXT,
+          PRIMARY KEY (run_id, challenge_id)
+        );
+        CREATE INDEX IF NOT EXISTS results_run_status_idx ON results(run_id, status);
+      `);
+    })().catch((err) => {
+      schemaReady = null;
+      throw err;
+    });
   }
+  await schemaReady;
+}
+
+export async function closeDb(): Promise<void> {
+  if (pool) await pool.end();
+  pool = null;
+  schemaReady = null;
+}
+
+export async function insertRun(run: Run): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO runs (id, ctf_base_url, flag_regex, status, started_at, stopped_at, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [run.id, run.ctfBaseUrl, run.flagRegex, run.status, run.startedAt, run.stoppedAt, run.createdBy],
+  );
+}
+
+export async function updateRunStatus(id: string, status: RunStatus, stoppedAt?: number): Promise<void> {
+  await ensureSchema();
+  await getPool().query(`UPDATE runs SET status=$2, stopped_at=$3 WHERE id=$1`, [id, status, stoppedAt ?? null]);
+}
+
+const RUN_COLUMNS = `id, ctf_base_url AS "ctfBaseUrl", flag_regex AS "flagRegex", status,
+  started_at AS "startedAt", stopped_at AS "stoppedAt", created_by AS "createdBy"`;
+
+export async function getRun(id: string): Promise<Run | undefined> {
+  await ensureSchema();
+  const result = await getPool().query<Run>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id=$1`, [id]);
+  return result.rows[0];
+}
+
+export async function getActiveRun(): Promise<Run | undefined> {
+  await ensureSchema();
+  const result = await getPool().query<Run>(`SELECT ${RUN_COLUMNS} FROM runs WHERE status='running' ORDER BY started_at DESC LIMIT 1`);
+  return result.rows[0];
+}
+
+export async function getLatestRun(): Promise<Run | undefined> {
+  await ensureSchema();
+  const result = await getPool().query<Run>(`SELECT ${RUN_COLUMNS} FROM runs ORDER BY started_at DESC LIMIT 1`);
+  return result.rows[0];
+}
+
+export async function upsertChallenge(c: ChallengeRecord): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO challenges (id,name,category,value,description) VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, category=EXCLUDED.category,
+       value=EXCLUDED.value, description=EXCLUDED.description`,
+    [c.id, c.name, c.category, c.value, c.description],
+  );
+}
+
+export async function getChallenge(id: number): Promise<ChallengeRecord | undefined> {
+  await ensureSchema();
+  const result = await getPool().query<ChallengeRecord>(`SELECT id,name,category,value,description FROM challenges WHERE id=$1`, [id]);
+  return result.rows[0];
+}
+
+export async function upsertResult(r: ResultRecord): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO results (run_id,challenge_id,status,flag_candidate,evidence,verified,confidence,
+      steps_used,stop_reason,started_at,finished_at,error)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     ON CONFLICT (run_id,challenge_id) DO UPDATE SET status=EXCLUDED.status,
+       flag_candidate=EXCLUDED.flag_candidate, evidence=EXCLUDED.evidence, verified=EXCLUDED.verified,
+       confidence=EXCLUDED.confidence, steps_used=EXCLUDED.steps_used, stop_reason=EXCLUDED.stop_reason,
+       started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at, error=EXCLUDED.error`,
+    [r.runId,r.challengeId,r.status,r.flagCandidate,r.evidence,r.verified,r.confidence,
+      r.stepsUsed,r.stopReason,r.startedAt,r.finishedAt,r.error],
+  );
+}
+
+const RESULT_COLUMNS = `run_id AS "runId", challenge_id AS "challengeId", status,
+  flag_candidate AS "flagCandidate", evidence, verified, confidence, steps_used AS "stepsUsed",
+  stop_reason AS "stopReason", started_at AS "startedAt", finished_at AS "finishedAt", error`;
+
+export async function getResults(runId: string): Promise<ResultRecord[]> {
+  await ensureSchema();
+  const result = await getPool().query<ResultRecord>(`SELECT ${RESULT_COLUMNS} FROM results WHERE run_id=$1`, [runId]);
+  return result.rows;
+}
+
+export async function getStatusCounts(runId: string): Promise<Record<ChallengeStatus, number>> {
+  await ensureSchema();
+  const result = await getPool().query<{ status: ChallengeStatus; count: string }>(
+    `SELECT status, COUNT(*)::text AS count FROM results WHERE run_id=$1 GROUP BY status`, [runId],
+  );
+  const counts: Record<ChallengeStatus, number> = { queued: 0, running: 0, found: 0, failed: 0, unverified: 0 };
+  for (const row of result.rows) counts[row.status] = Number(row.count);
   return counts;
 }
 
-export function isAlreadySolved(runId: string, challengeId: number): boolean {
-  const row = getDb().prepare(`
-    SELECT 1 FROM results WHERE runId = ? AND challengeId = ? AND status IN ('found', 'failed')
-  `).get(runId, challengeId);
-  return !!row;
+export async function isAlreadySolved(runId: string, challengeId: number): Promise<boolean> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `SELECT 1 FROM results WHERE run_id=$1 AND challenge_id=$2 AND status IN ('found','failed','unverified') LIMIT 1`,
+    [runId, challengeId],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
-export function getVerifiedFlags(runId: string): Array<ResultRecord & { challengeName: string; challengeCategory: string }> {
-  return getDb().prepare(`
-    SELECT r.*, c.name as challengeName, c.category as challengeCategory
-    FROM results r
-    JOIN challenges c ON r.challengeId = c.id
-    WHERE r.runId = ? AND r.verified = 1
-    ORDER BY r.finishedAt DESC
-  `).all(runId) as Array<ResultRecord & { challengeName: string; challengeCategory: string }>;
+export interface FlagRow extends ResultRecord { challengeName: string; challengeCategory: string }
+
+export async function getVerifiedFlags(runId: string): Promise<FlagRow[]> {
+  await ensureSchema();
+  const result = await getPool().query<FlagRow>(
+    `SELECT r.run_id AS "runId", r.challenge_id AS "challengeId", r.status,
+      r.flag_candidate AS "flagCandidate", r.evidence, r.verified, r.confidence,
+      r.steps_used AS "stepsUsed", r.stop_reason AS "stopReason", r.started_at AS "startedAt",
+      r.finished_at AS "finishedAt", r.error, c.name AS "challengeName", c.category AS "challengeCategory"
+     FROM results r JOIN challenges c ON c.id=r.challenge_id
+     WHERE r.run_id=$1 AND r.verified=TRUE ORDER BY r.finished_at DESC`, [runId],
+  );
+  return result.rows;
 }
 
-export function getUnverifiedFlags(runId: string): Array<ResultRecord & { challengeName: string; challengeCategory: string }> {
-  return getDb().prepare(`
-    SELECT r.*, c.name as challengeName, c.category as challengeCategory
-    FROM results r
-    JOIN challenges c ON r.challengeId = c.id
-    WHERE r.runId = ? AND r.flagCandidate IS NOT NULL AND r.verified = 0
-    ORDER BY r.finishedAt DESC
-  `).all(runId) as Array<ResultRecord & { challengeName: string; challengeCategory: string }>;
+export async function getUnverifiedFlags(runId: string): Promise<FlagRow[]> {
+  await ensureSchema();
+  const result = await getPool().query<FlagRow>(
+    `SELECT r.run_id AS "runId", r.challenge_id AS "challengeId", r.status,
+      r.flag_candidate AS "flagCandidate", r.evidence, r.verified, r.confidence,
+      r.steps_used AS "stepsUsed", r.stop_reason AS "stopReason", r.started_at AS "startedAt",
+      r.finished_at AS "finishedAt", r.error, c.name AS "challengeName", c.category AS "challengeCategory"
+     FROM results r JOIN challenges c ON c.id=r.challenge_id
+     WHERE r.run_id=$1 AND r.flag_candidate IS NOT NULL AND r.verified=FALSE ORDER BY r.finished_at DESC`, [runId],
+  );
+  return result.rows;
 }

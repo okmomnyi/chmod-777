@@ -3,7 +3,7 @@
  *
  * - Uses p-limit for concurrency (default 5)
  * - Skips already-solved challenges
- * - Persists all state to SQLite
+ * - Persists all state to Neon Postgres
  * - Emits events for the bot to relay as push messages
  */
 import { EventEmitter } from "events";
@@ -43,6 +43,7 @@ export interface RunnerEvents {
   "flag:unverified": (flag: UnverifiedFlag & { challengeName: string }) => void;
   "challenge:start": (info: { challengeId: number; name: string }) => void;
   "challenge:done": (info: { challengeId: number; name: string; status: string }) => void;
+  "challenge:error": (info: { challengeId: number; name: string; error: string }) => void;
   "run:done": (info: { runId: string; found: number; failed: number }) => void;
   "run:error": (err: Error) => void;
 }
@@ -53,15 +54,16 @@ export class Runner extends EventEmitter {
 
   /** Starts a new solving run. Returns the runId immediately; solving is async. */
   async start(opts: RunOptions): Promise<string> {
-    if (this.runId && getRun(this.runId)?.status === "running") {
-      throw new Error("A run is already in progress. Stop it first with /stop.");
+    if (this.runId) {
+      const existing = await getRun(this.runId);
+      if (existing?.status === "running") throw new Error("A run is already in progress. Stop it first with /stop.");
     }
 
     const runId = randomUUID();
     this.runId = runId;
     this.abortController = new AbortController();
 
-    insertRun({
+    await insertRun({
       id: runId,
       ctfBaseUrl: opts.ctfBaseUrl,
       flagRegex: opts.flagRegex,
@@ -74,7 +76,7 @@ export class Runner extends EventEmitter {
     // Run asynchronously — don't await
     this._runLoop(runId, opts).catch((err: Error) => {
       this.emit("run:error", err);
-      updateRunStatus(runId, "done", Date.now());
+      void updateRunStatus(runId, "done", Date.now()).catch((dbErr) => console.error("[runner] Could not persist run failure:", dbErr));
     });
 
     return runId;
@@ -83,7 +85,7 @@ export class Runner extends EventEmitter {
   async stop(): Promise<void> {
     if (!this.runId) return;
     this.abortController?.abort();
-    updateRunStatus(this.runId, "stopped", Date.now());
+    await updateRunStatus(this.runId, "stopped", Date.now());
 
     // Force-stop containers for this run
     const { stopRunContainers } = await import("./agent/container.js");
@@ -106,13 +108,12 @@ export class Runner extends EventEmitter {
     const challenges = await fetchChallenges(opts.ctfBaseUrl, opts.token);
 
     // 2. Enqueue all unsolved challenges
-    const tasks = challenges
-      .filter((c) => !c.solved_by_me)
-      .filter((c) => !isAlreadySolved(runId, c.id));
+    const alreadySolved = await Promise.all(challenges.map((c) => isAlreadySolved(runId, c.id)));
+    const tasks = challenges.filter((c, i) => !c.solved_by_me && !alreadySolved[i]);
 
     // Persist challenge metadata
     for (const c of challenges) {
-      upsertChallenge({
+      await upsertChallenge({
         id: c.id,
         name: c.name,
         category: c.category,
@@ -123,7 +124,7 @@ export class Runner extends EventEmitter {
 
     // 3. Queue as "queued" in DB
     for (const c of tasks) {
-      upsertResult({
+      await upsertResult({
         runId,
         challengeId: c.id,
         status: "queued",
@@ -151,7 +152,7 @@ export class Runner extends EventEmitter {
           this.emit("challenge:start", { challengeId: c.id, name: c.name });
 
           // Mark running
-          upsertResult({
+          await upsertResult({
             runId,
             challengeId: c.id,
             status: "running",
@@ -175,7 +176,7 @@ export class Runner extends EventEmitter {
             );
 
             // Update description in DB
-            upsertChallenge({
+            await upsertChallenge({
               id: c.id,
               name: c.name,
               category: c.category,
@@ -201,11 +202,11 @@ export class Runner extends EventEmitter {
             // Verify
             const verification = verifyResult(solverResult, opts.flagRegex);
 
-            const status = verification.verified ? "found" : "failed";
+            const status = verification.verified ? "found" : solverResult.flagCandidate ? "unverified" : "failed";
             if (verification.verified) found++;
             else failed++;
 
-            upsertResult({
+            await upsertResult({
               runId,
               challengeId: c.id,
               status,
@@ -238,9 +239,12 @@ export class Runner extends EventEmitter {
               name: c.name,
               status,
             });
+            if (solverResult.error) {
+              this.emit("challenge:error", { challengeId: c.id, name: c.name, error: solverResult.error });
+            }
           } catch (err) {
             failed++;
-            upsertResult({
+            await upsertResult({
               runId,
               challengeId: c.id,
               status: "failed",
@@ -260,13 +264,14 @@ export class Runner extends EventEmitter {
               name: c.name,
               status: "failed",
             });
+            this.emit("challenge:error", { challengeId: c.id, name: c.name, error: (err as Error).message });
           }
         })
       )
     );
 
     if (!signal.aborted) {
-      updateRunStatus(runId, "done", Date.now());
+      await updateRunStatus(runId, "done", Date.now());
       this.emit("run:done", { runId, found, failed });
       this.runId = null;
     }

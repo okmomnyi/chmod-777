@@ -6,3 +6,5 @@ logs/
 config/providers.json
 *.env
 .env
+.env.*
+!.env.example

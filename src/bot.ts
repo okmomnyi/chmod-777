@@ -17,10 +17,14 @@ import {
   getVerifiedFlags,
   getUnverifiedFlags,
   getActiveRun,
+  getLatestRun,
 } from "./db.js";
 import type { VerifiedFlag } from "./verify.js";
 
 const cfg = loadConfig();
+if (!cfg.telegram.botToken || cfg.telegram.allowedUserIds.length === 0) {
+  throw new Error("Set TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_IDS in .env before starting the bot.");
+}
 const bot = new Bot(cfg.telegram.botToken);
 const runner = getRunner();
 const allowedIds = new Set(cfg.telegram.allowedUserIds);
@@ -30,7 +34,7 @@ const allowedIds = new Set(cfg.telegram.allowedUserIds);
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
   if (!userId || !allowedIds.has(userId)) {
-    await ctx.reply("⛔ Unauthorized.");
+    await ctx.reply("⛔ Unauthorized. This bot is restricted to approved users.").catch(() => {});
     return;
   }
   await next();
@@ -46,11 +50,12 @@ runner.on(
       : "no evidence";
 
     const msg =
-      `✅ [${flag.challengeCategory}] ${flag.challengeName}: \`${flag.flag}\`\n` +
-      `_${evidenceLine.slice(0, 200)}_`;
+      `✅ Flag found — [${flag.challengeCategory}] ${flag.challengeName}\n` +
+      `Flag: ${flag.flag}\nEvidence: ${evidenceLine.slice(0, 200)}\n` +
+      `Submit this flag manually on the CTFd site.`;
 
     for (const userId of allowedIds) {
-      await bot.api.sendMessage(userId, msg, { parse_mode: "Markdown" }).catch(() => {});
+      await bot.api.sendMessage(userId, msg).catch(() => {});
     }
   }
 );
@@ -67,6 +72,18 @@ runner.on("run:error", async (err: Error) => {
   for (const userId of allowedIds) {
     await bot.api.sendMessage(userId, msg).catch(() => {});
   }
+});
+
+runner.on("challenge:error", async ({ challengeId, name, error }: { challengeId: number; name: string; error: string }) => {
+  const message = `❌ Challenge error — [${challengeId}] ${name}\n${error.slice(0, 1000)}`;
+  for (const userId of allowedIds) await bot.api.sendMessage(userId, message).catch(() => {});
+});
+
+// Catch errors from all command handlers and return a useful reply instead of
+// leaving the Telegram command unanswered.
+bot.catch(async (err) => {
+  console.error("[bot] Update handler failed:", err.error);
+  await err.ctx.reply(`❌ Command failed: ${(err.error as Error)?.message ?? "Unexpected error"}`).catch(() => {});
 });
 
 // ─── Commands ────────────────────────────────────────────────────────────────
@@ -107,8 +124,7 @@ bot.command("start_run", async (ctx: Context) => {
       createdBy: ctx.from!.id,
     });
     await ctx.reply(
-      `🚀 Run started!\nID: \`${runId}\`\nCTF: ${ctfBaseUrl}\nFlag regex: \`${flagRegex}\`\n\nUse /status to track progress.`,
-      { parse_mode: "Markdown" }
+      `🚀 Run started!\nID: ${runId}\nCTF: ${ctfBaseUrl}\nFlag regex: ${flagRegex}\n\nUse /status to track progress. Found flags will be sent here for manual submission.`
     );
   } catch (err) {
     await ctx.reply(`❌ Failed to start run: ${(err as Error).message}`);
@@ -121,25 +137,25 @@ bot.command("start_run", async (ctx: Context) => {
 bot.command("status", async (ctx: Context) => {
   const run = runner.currentRunId
     ? { id: runner.currentRunId }
-    : getActiveRun();
+    : await getActiveRun() ?? await getLatestRun();
 
   if (!run) {
     await ctx.reply("No active run. Start one with /start_run.");
     return;
   }
 
-  const counts = getStatusCounts(run.id);
+  const counts = await getStatusCounts(run.id);
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
   await ctx.reply(
-    `📊 Run \`${run.id.slice(0, 8)}...\`\n` +
+    `📊 Run ${run.id.slice(0, 8)}...\n` +
       `⏳ Queued:  ${counts.queued}\n` +
       `🔄 Running: ${counts.running}\n` +
       `✅ Found:   ${counts.found}\n` +
+      `⚠️ Unverified: ${counts.unverified}\n` +
       `❌ Failed:  ${counts.failed}\n` +
       `──────────\n` +
       `   Total:  ${total}`,
-    { parse_mode: "Markdown" }
   );
 });
 
@@ -149,15 +165,15 @@ bot.command("status", async (ctx: Context) => {
 bot.command("flags", async (ctx: Context) => {
   const run = runner.currentRunId
     ? { id: runner.currentRunId }
-    : getActiveRun();
+    : await getActiveRun() ?? await getLatestRun();
 
   if (!run) {
     await ctx.reply("No active run.");
     return;
   }
 
-  const verified = getVerifiedFlags(run.id);
-  const unverified = getUnverifiedFlags(run.id);
+  const verified = await getVerifiedFlags(run.id);
+  const unverified = await getUnverifiedFlags(run.id);
 
   if (verified.length === 0 && unverified.length === 0) {
     await ctx.reply("No flags found yet.");
@@ -167,18 +183,18 @@ bot.command("flags", async (ctx: Context) => {
   let msg = "";
 
   if (verified.length > 0) {
-    msg += `*✅ Verified Flags (${verified.length})*\n`;
+    msg += `✅ Verified Flags (${verified.length})\n`;
     for (const f of verified) {
       const ev = f.evidence?.split("\n")[0]?.slice(0, 80) ?? "";
-      msg += `• [${f.challengeCategory}] ${f.challengeName}: \`${f.flagCandidate}\`\n  _${ev}_\n`;
+      msg += `• [${f.challengeCategory}] ${f.challengeName}: ${f.flagCandidate}\n  ${ev}\n`;
     }
   }
 
   if (unverified.length > 0) {
     if (msg) msg += "\n";
-    msg += `*⚠️ Unverified Candidates (${unverified.length})*\n`;
+    msg += `⚠️ Unverified Candidates (${unverified.length})\n`;
     for (const f of unverified) {
-      msg += `• ${f.challengeName}: \`${f.flagCandidate ?? "null"}\`\n`;
+      msg += `• ${f.challengeName}: ${f.flagCandidate ?? "unknown"}\n  Reason: ${f.error ?? f.stopReason}\n`;
     }
   }
 
@@ -187,7 +203,7 @@ bot.command("flags", async (ctx: Context) => {
     msg = msg.slice(0, 4000) + "\n...(truncated)";
   }
 
-  await ctx.reply(msg, { parse_mode: "Markdown" });
+  await ctx.reply(msg);
 });
 
 /**
@@ -202,7 +218,7 @@ bot.command("stop", async (ctx: Context) => {
   await ctx.reply("⏹ Stopping run and killing containers...");
   try {
     await runner.stop();
-    await ctx.reply("✅ Run stopped.");
+    await ctx.reply("✅ Run stopped. Any flags already found remain available with /flags.");
   } catch (err) {
     await ctx.reply(`❌ Error stopping run: ${(err as Error).message}`);
   }
@@ -216,11 +232,17 @@ bot.command("help", async (ctx: Context) => {
     `*CTF Bot Commands*\n\n` +
       `/start_run <url> <token> [flag_regex] — Start solving a CTF\n` +
       `/status — Show current run progress\n` +
-      `/flags — List found flag candidates\n` +
+      `/flags — List found flag candidates for manual CTFd submission\n` +
       `/stop — Cancel the active run\n` +
       `/help — Show this message`,
     { parse_mode: "Markdown" }
   );
+});
+
+bot.on("message:text", async (ctx) => {
+  if (ctx.message.text.startsWith("/")) {
+    await ctx.reply("Unknown command. Use /help to see available commands.");
+  }
 });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
