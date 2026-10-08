@@ -16,7 +16,6 @@ import {
   getStatusCounts,
   getVerifiedFlags,
   getUnverifiedFlags,
-  getActiveRun,
   getLatestRun,
 } from "./db.js";
 import type { VerifiedFlag } from "./verify.js";
@@ -157,9 +156,11 @@ bot.command("start_run", async (ctx: Context) => {
  * /status — show queued/running/found/failed counts for the active run
  */
 bot.command("status", async (ctx: Context) => {
+  // The process-local runner is authoritative; old database rows may remain
+  // marked running after a previous bot restart.
   const run = runner.currentRunId
     ? { id: runner.currentRunId }
-    : await getActiveRun() ?? await getLatestRun();
+    : await getLatestRun();
 
   if (!run) {
     await ctx.reply("No active run. Start one with /start_run.");
@@ -187,7 +188,7 @@ bot.command("status", async (ctx: Context) => {
 bot.command("flags", async (ctx: Context) => {
   const run = runner.currentRunId
     ? { id: runner.currentRunId }
-    : await getActiveRun() ?? await getLatestRun();
+    : await getLatestRun();
 
   if (!run) {
     await ctx.reply("No active run.");
