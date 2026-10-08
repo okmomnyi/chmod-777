@@ -1,7 +1,7 @@
 # CTF Solver Sandbox Image
 # Provides: python3, pwntools, binwalk, exiftool, curl, file, netcat, gdb, z3, angr
 # Sagemath is NOT pre-installed (too large); agent can install it per-challenge if needed.
-# Runs as non-root user (uid 1000)
+# Runs as non-root user (uid 1001; Ubuntu 24.04 reserves uid 1000)
 
 FROM ubuntu:24.04
 
@@ -65,7 +65,7 @@ RUN python3 -m venv /opt/venv && \
     gmpy2
 
 # ── Create non-root user and work dirs ────────────────────────────────────────
-RUN useradd -u 1000 -m -s /bin/bash ctf && \
+RUN groupadd --gid 1001 ctf && useradd --uid 1001 --gid 1001 -m -s /bin/bash ctf && \
     mkdir -p /work/files /work/scratch && \
     chown -R ctf:ctf /work
 

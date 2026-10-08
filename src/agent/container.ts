@@ -54,14 +54,14 @@ export async function createSandbox(spec: ContainerSpec): Promise<SandboxContain
   const container = await docker.createContainer({
     Image: spec.image,
     Cmd: ["sleep", "infinity"], // kept alive; we exec into it
-    User: "1000:1000",
+    User: "1001:1001",
     WorkingDir: "/work",
     HostConfig: {
       // Read-only bind for challenge files
       Binds: [
         `${spec.filesDir}:/work/files:ro`,
-        `${spec.scratchDir}:/work/scratch:rw`,
       ],
+      Tmpfs: { "/work/scratch": "rw,noexec,nosuid,nodev,size=256m" },
       // No privileged, no extra capabilities
       Privileged: false,
       CapDrop: ["ALL"],
@@ -94,7 +94,7 @@ export async function createSandbox(spec: ContainerSpec): Promise<SandboxContain
         Cmd: ["bash", "-c", cmd],
         AttachStdout: true,
         AttachStderr: true,
-        User: "1000:1000",
+        User: "1001:1001",
         WorkingDir: "/work",
       });
 
