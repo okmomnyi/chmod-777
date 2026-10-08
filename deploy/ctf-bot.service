@@ -1,0 +1,22 @@
+[Unit]
+Description=CTF Bot Telegram worker
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ctfbot
+Group=ctfbot
+SupplementaryGroups=docker
+WorkingDirectory=/opt/ctf-bot/app
+Environment=NODE_ENV=production
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+EnvironmentFile=/opt/ctf-bot/app/.env
+ExecStart=/usr/bin/node /opt/ctf-bot/app/dist/bot.js
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
