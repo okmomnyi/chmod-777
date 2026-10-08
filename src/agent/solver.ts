@@ -18,10 +18,11 @@ import { createSandbox } from "./container.js";
 import { executeTool } from "./executor.js";
 import type { SolverConfig, SolverResult, StopReason } from "./types.js";
 
-const DEFAULT_MAX_STEPS = 30;
+const DEFAULT_MAX_STEPS = 12;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
-const DEFAULT_MAX_OUTPUT_CHARS = 4096;
+const DEFAULT_MAX_OUTPUT_CHARS = 2048;
 const SANDBOX_IMAGE = "ctf-sandbox:latest";
+const MAX_TOOL_ROUNDS_IN_CONTEXT = 4;
 
 function buildSystemPrompt(cfg: SolverConfig): string {
   const { challenge, flagRegex } = cfg;
@@ -59,7 +60,11 @@ ${flagRegex
 - You have a limited number of steps; be efficient.`;
 }
 
-function extractFlag(text: string, flagRegex?: string | null): string | null {
+function extractFlag(
+  text: string,
+  flagRegex?: string | null,
+  ctfBaseUrl?: string
+): string | null {
   if (flagRegex) {
     try {
       const matches = text.match(new RegExp(flagRegex, "g"));
@@ -69,10 +74,26 @@ function extractFlag(text: string, flagRegex?: string | null): string | null {
     }
   }
 
-  // Without a challenge-specific pattern, recognize common braced formats
-  // and values explicitly labeled as flags or tokens.
+  // Without a challenge-specific pattern, accept well-known prefixes,
+  // the CTF site's own brand, or prefixes with uppercase flag-style names.
   const commonFlag = text.match(/\b[A-Za-z][A-Za-z0-9_.-]{0,31}\{[^{}\r\n]{1,256}\}/);
-  if (commonFlag) return commonFlag[0];
+  if (commonFlag) {
+    const prefix = commonFlag[0].slice(0, commonFlag[0].indexOf("{"));
+    const normalizedPrefix = prefix.toLowerCase();
+    const knownPrefixes = new Set(["flag", "ctf", "picoctf", "htb", "bugpwn"]);
+    let siteBrand = false;
+    try {
+      const hostLabels = new URL(ctfBaseUrl ?? "").hostname.toLowerCase().split(".");
+      const genericLabels = new Set(["ctf", "www", "com", "org", "net", "io", "co", "uk", "edu", "gov"]);
+      siteBrand = hostLabels.some((label) => !genericLabels.has(label) && label === normalizedPrefix);
+    } catch {
+      // The run URL is validated before reaching the solver; continue without a host hint.
+    }
+    const uppercaseCount = [...prefix].filter((char) => char >= "A" && char <= "Z").length;
+    if (knownPrefixes.has(normalizedPrefix) || siteBrand || uppercaseCount >= 2) {
+      return commonFlag[0];
+    }
+  }
 
   const labeledFlag = text.match(/\bflag\s*(?:is\s*)?[:=]\s*[`"']?([^\s`"'<>]{4,256})/i);
   const candidate = labeledFlag?.[1];
@@ -80,6 +101,20 @@ function extractFlag(text: string, flagRegex?: string | null): string | null {
     return null;
   }
   return candidate;
+}
+
+/** Keep the system/user instructions and the most recent complete tool rounds. */
+function compactMessages(messages: Message[]): Message[] {
+  const prefix = messages.slice(0, 2);
+  const history = messages.slice(2);
+  const assistantCallIndexes = history
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.role === "assistant" && Boolean(message.tool_calls?.length))
+    .map(({ index }) => index);
+
+  if (assistantCallIndexes.length <= MAX_TOOL_ROUNDS_IN_CONTEXT) return messages;
+  const firstRecentRound = assistantCallIndexes[assistantCallIndexes.length - MAX_TOOL_ROUNDS_IN_CONTEXT];
+  return [...prefix, ...history.slice(firstRecentRound)];
 }
 
 export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
@@ -132,10 +167,10 @@ export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
       let response;
       try {
         response = await router.chatWithEscalation({
-          messages,
+          messages: compactMessages(messages),
           tools: AGENT_TOOLS,
           tier: "cheap",
-          maxTokens: 2048,
+          maxTokens: 1024,
           runId: cfg.runId,
           challengeId: cfg.challenge.id,
         });
@@ -190,7 +225,7 @@ export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
         });
 
         // Check for flag in tool output (authoritative stop condition)
-        const found = extractFlag(result.output, cfg.flagRegex);
+        const found = extractFlag(result.output, cfg.flagRegex, cfg.ctfBaseUrl);
         if (found) {
           flagCandidate = found;
           evidence = `Tool: ${tc.function.name}\nInput: ${tc.function.arguments}\n\nOutput:\n${result.output}`;
