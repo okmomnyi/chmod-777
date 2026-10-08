@@ -40,6 +40,7 @@ function buildSystemPrompt(cfg: SolverConfig): string {
 Name: ${challenge.name}
 Category: ${challenge.category}
 Points: ${challenge.value}
+CTF site: ${cfg.ctfBaseUrl}
 ${connInfo}${files}
 
 ## Description
@@ -55,7 +56,8 @@ ${flagRegex
 - Challenge files are at /work/files/ (read-only). Write scratch files to /work/scratch/.
 - When you find the flag in tool output, output it clearly.
 - Never submit a flag to CTFd. The operator submits verified flags manually.
-- Think step by step. Explain your reasoning before each tool call.
+- Use tools directly and keep explanations brief. Inspect attached files and the provided CTF site/connection before choosing an approach.
+- Do not repeat the same command or request unless you change its inputs based on the previous output.
 - Do NOT guess the flag — it must appear in actual tool output.
 - You have a limited number of steps; be efficient.`;
 }
@@ -184,6 +186,9 @@ export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
       }
 
       stepsUsed++;
+      console.info(
+        `[solver] challenge=${cfg.challenge.id} step=${stepsUsed} model=${response.model} tools=${response.toolCalls.map((call) => call.function.name).join(",") || "none"}`
+      );
 
       // No tool calls — model returned a text answer
       if (response.toolCalls.length === 0) {

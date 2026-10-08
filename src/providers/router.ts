@@ -1,8 +1,8 @@
 /**
  * Provider Router
  *
- * - Selects a provider per call based on per-provider concurrency slots.
- * - On 429 or 5xx from the primary provider, retries on the other.
+ * - Prefers NVIDIA for agentic solving, with OpenRouter as fallback.
+ * - On unavailable models, 429, or 5xx from the primary provider, retries on the other.
  * - Enforces per-run and per-challenge token spend caps.
  * - Exposes the same LLMClient interface so call sites are provider-agnostic.
  */
@@ -49,15 +49,6 @@ export class ProviderRouter implements LLMClient {
     const isConfigured = (p: { apiKey: string; baseUrl: string }) =>
       Boolean(p.apiKey) && !p.apiKey.includes("PLACEHOLDER") && !p.baseUrl.includes("PLACEHOLDER");
 
-    if (isConfigured(cfg.providers.openrouter)) {
-      slots.push({
-        client: new OpenRouterClient(cfg.providers.openrouter),
-        limiter: pLimit(cfg.providers.openrouter.maxConcurrency),
-      });
-    } else {
-      console.warn("[router] OpenRouter API key missing — skipping");
-    }
-
     if (isConfigured(cfg.providers.nvidia)) {
       slots.push({
         client: new NvidiaClient(cfg.providers.nvidia),
@@ -65,6 +56,15 @@ export class ProviderRouter implements LLMClient {
       });
     } else {
       console.warn("[router] NVIDIA API key missing — skipping");
+    }
+
+    if (isConfigured(cfg.providers.openrouter)) {
+      slots.push({
+        client: new OpenRouterClient(cfg.providers.openrouter),
+        limiter: pLimit(cfg.providers.openrouter.maxConcurrency),
+      });
+    } else {
+      console.warn("[router] OpenRouter API key missing — skipping");
     }
 
     if (slots.length === 0) {
@@ -113,7 +113,7 @@ export class ProviderRouter implements LLMClient {
         // Spend cap exceeded — don't retry, propagate immediately
         if (err instanceof SpendCapExceededError) throw err;
 
-        // Only retry on the other provider for 429/5xx
+        // Retry on the other provider for unavailable models, 429, and 5xx.
         if (!isRetryableError(err)) throw err;
 
         console.warn(
