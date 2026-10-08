@@ -1,0 +1,73 @@
+# CTF Solver Sandbox Image
+# Provides: python3, pwntools, binwalk, exiftool, curl, file, netcat, gdb, z3, angr
+# Sagemath is NOT pre-installed (too large); agent can install it per-challenge if needed.
+# Runs as non-root user (uid 1000)
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# ── System packages ────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    python3-venv \
+    binwalk \
+    exiftool \
+    curl \
+    wget \
+    file \
+    netcat-openbsd \
+    ncat \
+    gdb \
+    gdbserver \
+    ltrace \
+    strace \
+    xxd \
+    patchelf \
+    elfutils \
+    libssl-dev \
+    libffi-dev \
+    gcc \
+    g++ \
+    make \
+    git \
+    unzip \
+    zip \
+    tar \
+    bzip2 \
+    xz-utils \
+    zlib1g-dev \
+    libgmp-dev \
+    libpcap-dev \
+    nmap \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python packages ────────────────────────────────────────────────────────────
+# angr is intentionally excluded — it is huge and slow to install.
+# Install it on-demand per challenge if needed: pip3 install angr
+RUN pip3 install --no-cache-dir \
+    pwntools \
+    requests \
+    cryptography \
+    pycryptodome \
+    sympy \
+    z3-solver \
+    Pillow \
+    numpy \
+    gmpy2
+
+# ── Create non-root user and work dirs ────────────────────────────────────────
+RUN useradd -u 1000 -m -s /bin/bash ctf && \
+    mkdir -p /work/files /work/scratch && \
+    chown -R ctf:ctf /work
+
+USER ctf
+WORKDIR /work
+
+# Default: sleep so we can exec into it
+CMD ["sleep", "infinity"]

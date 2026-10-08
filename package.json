@@ -1,0 +1,30 @@
+{
+  "name": "ctf-bot",
+  "version": "1.0.0",
+  "main": "dist/bot.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev:bot": "tsx src/bot.ts",
+    "dev:runner": "tsx src/runner.ts",
+    "test:providers": "tsx src/providers/test.ts",
+    "test:ctfd": "tsx src/platforms/test-ctfd.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "CTF challenge auto-solver via LLM agents and Telegram",
+  "dependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/dockerode": "4.0.1",
+    "@types/node": "26.6.4",
+    "better-sqlite3": "12.11.1",
+    "dockerode": "5.0.1",
+    "grammy": "1.46.0",
+    "p-limit": "4.0.0",
+    "ts-node": "10.9.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "zod": "4.6.5"
+  }
+}

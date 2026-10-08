@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+work/
+logs/
+config/providers.json
+*.env
+.env

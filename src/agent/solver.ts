@@ -1,0 +1,222 @@
+/**
+ * Solver loop — runs the LLM agent against one CTF challenge inside a sandbox.
+ *
+ * Flow:
+ *  1. Build system prompt with challenge details
+ *  2. Send to LLM, receive tool calls
+ *  3. Execute tools in container, append results
+ *  4. Repeat until stop condition met
+ *  5. Return SolverResult
+ */
+import { join } from "path";
+import { mkdirSync } from "fs";
+import { getRouter } from "../providers/router.js";
+import { SpendCapExceededError } from "../providers/spend-tracker.js";
+import type { Message } from "../providers/types.js";
+import { AGENT_TOOLS } from "./tools.js";
+import { createSandbox } from "./container.js";
+import { executeTool } from "./executor.js";
+import type { SolverConfig, SolverResult, StopReason } from "./types.js";
+
+const DEFAULT_MAX_STEPS = 30;
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
+const DEFAULT_MAX_OUTPUT_CHARS = 4096;
+const SANDBOX_IMAGE = "ctf-sandbox:latest";
+
+function buildSystemPrompt(cfg: SolverConfig): string {
+  const { challenge, flagRegex } = cfg;
+  const connInfo = challenge.connection_info
+    ? `\nConnection: ${challenge.connection_info}`
+    : "";
+  const files =
+    challenge.files && challenge.files.length > 0
+      ? `\nFiles (available at /work/files/): ${challenge.files.join(", ")}`
+      : "\nNo files attached.";
+
+  return `You are an expert CTF solver. Your goal is to find the flag for this challenge.
+
+## Challenge
+Name: ${challenge.name}
+Category: ${challenge.category}
+Points: ${challenge.value}
+${connInfo}${files}
+
+## Description
+${challenge.description}
+
+## Flag Format
+The flag matches this regex: ${flagRegex}
+
+## Instructions
+- Use the provided tools to explore files, run commands, and interact with services.
+- Challenge files are at /work/files/ (read-only). Write scratch files to /work/scratch/.
+- When you find the flag in tool output, output it clearly.
+- Think step by step. Explain your reasoning before each tool call.
+- Do NOT guess the flag — it must appear in actual tool output.
+- You have a limited number of steps; be efficient.`;
+}
+
+function extractFlag(text: string, flagRegex: string): string | null {
+  try {
+    const re = new RegExp(flagRegex, "g");
+    const matches = text.match(re);
+    return matches ? matches[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {
+  const maxSteps = cfg.maxSteps ?? DEFAULT_MAX_STEPS;
+  const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxOutputChars = cfg.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
+
+  const scratchDir = join(
+    process.cwd(),
+    "work",
+    String(cfg.challenge.id),
+    "scratch"
+  );
+  mkdirSync(scratchDir, { recursive: true });
+
+  const router = getRouter();
+  const messages: Message[] = [
+    { role: "system", content: buildSystemPrompt(cfg) },
+    {
+      role: "user",
+      content:
+        "Start solving the challenge. Use your tools to explore and find the flag.",
+    },
+  ];
+
+  let flagCandidate: string | null = null;
+  let evidence: string | null = null;
+  let stepsUsed = 0;
+  let stopReason: StopReason = "error";
+  let errorMsg: string | undefined;
+
+  const sandbox = await createSandbox({
+    image: cfg.sandboxImage ?? SANDBOX_IMAGE,
+    challengeId: cfg.challenge.id,
+    filesDir: cfg.filesDir,
+    scratchDir,
+    challengeHost: cfg.challenge.host,
+    runId: cfg.runId,
+  });
+
+  const deadline = Date.now() + timeoutMs;
+
+  try {
+    while (stepsUsed < maxSteps) {
+      if (Date.now() > deadline) {
+        stopReason = "timeout";
+        break;
+      }
+
+      let response;
+      try {
+        response = await router.chatWithEscalation({
+          messages,
+          tools: AGENT_TOOLS,
+          tier: "cheap",
+          maxTokens: 2048,
+          runId: cfg.runId,
+          challengeId: cfg.challenge.id,
+        });
+      } catch (err) {
+        if (err instanceof SpendCapExceededError) {
+          stopReason = "token_budget";
+          errorMsg = (err as Error).message;
+          break;
+        }
+        throw err;
+      }
+
+      stepsUsed++;
+
+      // No tool calls — model returned a text answer
+      if (response.toolCalls.length === 0) {
+        // Check if the text itself contains the flag (shouldn't per instructions,
+        // but capture it as low-confidence)
+        const textFlag = extractFlag(response.content ?? "", cfg.flagRegex);
+        if (textFlag) {
+          flagCandidate = textFlag;
+          evidence = `[model text — not tool output]\n${response.content}`;
+          stopReason = "found";
+        } else {
+          // Model is done but no flag found
+          stopReason = "max_steps"; // treat as exhausted
+        }
+        break;
+      }
+
+      // Add assistant message with tool calls
+      messages.push({
+        role: "assistant",
+        content: response.content ?? "",
+        // Attach tool_calls as metadata for downstream serialisation
+        ...(response.toolCalls.length > 0
+          ? { tool_calls: response.toolCalls }
+          : {}),
+      } as Message & { tool_calls?: unknown });
+
+      // Execute each tool call
+      for (const tc of response.toolCalls) {
+        let toolArgs: Record<string, unknown>;
+        try {
+          toolArgs = JSON.parse(tc.function.arguments);
+        } catch {
+          toolArgs = {};
+        }
+
+        const result = await executeTool(
+          { name: tc.function.name, arguments: toolArgs },
+          sandbox,
+          maxOutputChars
+        );
+
+        // Append tool result to messages
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          name: tc.function.name,
+          content: result.output,
+        });
+
+        // Check for flag in tool output (authoritative stop condition)
+        const found = extractFlag(result.output, cfg.flagRegex);
+        if (found) {
+          flagCandidate = found;
+          evidence = `Tool: ${tc.function.name}\nInput: ${tc.function.arguments}\n\nOutput:\n${result.output}`;
+          stopReason = "found";
+        }
+      }
+
+      if (stopReason === "found") break;
+    }
+
+    if (stepsUsed >= maxSteps && stopReason === "error") {
+      stopReason = "max_steps";
+    }
+  } catch (err) {
+    stopReason = "error";
+    errorMsg = (err as Error).message;
+  } finally {
+    await sandbox.stop();
+  }
+
+  const confidence =
+    flagCandidate && stopReason === "found"
+      ? evidence?.includes("[model text") ? "low" : "high"
+      : "none";
+
+  return {
+    challengeId: cfg.challenge.id,
+    flagCandidate,
+    evidence,
+    stepsUsed,
+    stopReason,
+    confidence,
+    error: errorMsg,
+  };
+}
