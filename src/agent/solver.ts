@@ -47,7 +47,7 @@ ${challenge.description}
 ## Flag Format
 ${flagRegex
     ? `The flag matches this regex: ${flagRegex}`
-    : "No flag regex was provided. Look for common PREFIX{value} flag formats or values explicitly labeled as a flag. Only report a candidate if it appears literally in tool output; do not invent one."}
+    : "No flag regex was provided. Look for common PREFIX{value} flag formats or values explicitly labeled as a flag. Do not treat session cookies, JWTs, API keys, or arbitrary tokens as flags. Only report a candidate if it appears literally in tool output; do not invent one."}
 
 ## Instructions
 - Use the provided tools to explore files, run commands, and interact with services.
@@ -74,8 +74,12 @@ function extractFlag(text: string, flagRegex?: string | null): string | null {
   const commonFlag = text.match(/\b[A-Za-z][A-Za-z0-9_.-]{0,31}\{[^{}\r\n]{1,256}\}/);
   if (commonFlag) return commonFlag[0];
 
-  const labeledFlag = text.match(/\b(?:flag|token)\s*(?:is\s*)?[:=]\s*[`"']?([^\s`"'<>]{4,256})/i);
-  return labeledFlag?.[1] ?? null;
+  const labeledFlag = text.match(/\bflag\s*(?:is\s*)?[:=]\s*[`"']?([^\s`"'<>]{4,256})/i);
+  const candidate = labeledFlag?.[1];
+  if (!candidate || /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(candidate)) {
+    return null;
+  }
+  return candidate;
 }
 
 export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {

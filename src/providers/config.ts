@@ -55,7 +55,7 @@ export function loadConfig(): ProvidersFile {
       openrouter: {
         baseUrl: "https://openrouter.ai/api/v1",
         apiKey: "",
-        models: { cheap: "openrouter/free", smart: "openai/gpt-oss-20b:free" },
+        models: { cheap: "openrouter/free", smart: "openrouter/free" },
         maxConcurrency: 3,
         timeoutMs: 120_000,
       },

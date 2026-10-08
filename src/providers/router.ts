@@ -16,7 +16,9 @@ import { SpendTracker, SpendCapExceededError } from "./spend-tracker.js";
 function isRetryableError(err: unknown): boolean {
   if (err instanceof Error) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "429" || (code && parseInt(code, 10) >= 500)) return true;
+    // A 404 may mean a provider removed or no longer serves a configured model;
+    // let the router try the other provider and then the alternate tier.
+    if (code === "404" || code === "429" || (code && parseInt(code, 10) >= 500)) return true;
     // Network-level errors
     if (
       err.message.includes("ECONNRESET") ||
