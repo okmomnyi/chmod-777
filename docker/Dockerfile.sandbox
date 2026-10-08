@@ -3,10 +3,11 @@
 # Sagemath is NOT pre-installed (too large); agent can install it per-challenge if needed.
 # Runs as non-root user (uid 1000)
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PATH="/opt/venv/bin:${PATH}"
 
 # ── System packages ────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -50,7 +51,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Python packages ────────────────────────────────────────────────────────────
 # angr is intentionally excluded — it is huge and slow to install.
 # Install it on-demand per challenge if needed: pip3 install angr
-RUN pip3 install --no-cache-dir \
+RUN python3 -m venv /opt/venv && \
+    pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir \
     pwntools \
     requests \
     cryptography \
