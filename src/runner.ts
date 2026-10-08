@@ -33,7 +33,7 @@ const DEFAULT_CONCURRENCY = 5;
 export interface RunOptions {
   ctfBaseUrl: string;
   token: string;
-  flagRegex: string;
+  flagRegex?: string;
   concurrency?: number;
   createdBy: number; // Telegram user ID
 }
@@ -66,7 +66,8 @@ export class Runner extends EventEmitter {
     await insertRun({
       id: runId,
       ctfBaseUrl: opts.ctfBaseUrl,
-      flagRegex: opts.flagRegex,
+      // Keep the database column non-null for compatibility with existing schemas.
+      flagRegex: opts.flagRegex ?? "",
       status: "running",
       startedAt: Date.now(),
       stoppedAt: null,
@@ -193,14 +194,14 @@ export class Runner extends EventEmitter {
             const solverResult = await solveChallenge({
               challenge: detail,
               ctfBaseUrl: opts.ctfBaseUrl,
-              flagRegex: opts.flagRegex,
+              flagRegex: opts.flagRegex || null,
               sandboxImage: SANDBOX_IMAGE,
               filesDir,
               runId,
             });
 
             // Verify
-            const verification = verifyResult(solverResult, opts.flagRegex);
+            const verification = verifyResult(solverResult, opts.flagRegex || null);
 
             const status = verification.verified ? "found" : solverResult.flagCandidate ? "unverified" : "failed";
             if (verification.verified) found++;

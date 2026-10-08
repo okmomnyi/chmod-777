@@ -5,8 +5,8 @@ export interface SolverConfig {
   challenge: ChallengeDetail;
   /** CTFd base URL (needed for http_request context) */
   ctfBaseUrl: string;
-  /** Regex pattern for the CTF's flag format, e.g. "flag\\{[^}]+\\}" */
-  flagRegex: string;
+  /** Optional regex pattern for the CTF's flag format. */
+  flagRegex?: string | null;
   /** Docker image to use for the sandbox */
   sandboxImage: string;
   /** Absolute path to the directory containing challenge files (mounted read-only) */

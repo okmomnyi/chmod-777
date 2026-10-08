@@ -3,7 +3,7 @@
  *
  * A result is "verified" iff:
  *  1. flagCandidate is non-null
- *  2. flagCandidate matches the flag regex
+ *  2. If a regex was supplied, flagCandidate matches it
  *  3. evidence actually contains the flagCandidate string
  *
  * Results that fail any check are marked "unverified" and kept separate.
@@ -30,7 +30,7 @@ export type VerifyResult = VerifiedFlag | UnverifiedFlag;
 
 export function verifyResult(
   result: SolverResult,
-  flagRegex: string
+  flagRegex?: string | null
 ): VerifyResult {
   const { challengeId, flagCandidate, evidence } = result;
 
@@ -44,27 +44,29 @@ export function verifyResult(
     };
   }
 
-  let re: RegExp;
-  try {
-    re = new RegExp(flagRegex);
-  } catch (e) {
-    return {
-      verified: false,
-      challengeId,
-      flag: flagCandidate,
-      reason: `invalid flagRegex: ${(e as Error).message}`,
-      evidence,
-    };
-  }
+  if (flagRegex) {
+    let re: RegExp;
+    try {
+      re = new RegExp(flagRegex);
+    } catch (e) {
+      return {
+        verified: false,
+        challengeId,
+        flag: flagCandidate,
+        reason: `invalid flagRegex: ${(e as Error).message}`,
+        evidence,
+      };
+    }
 
-  if (!re.test(flagCandidate)) {
-    return {
-      verified: false,
-      challengeId,
-      flag: flagCandidate,
-      reason: `flag "${flagCandidate}" does not match regex ${flagRegex}`,
-      evidence,
-    };
+    if (!re.test(flagCandidate)) {
+      return {
+        verified: false,
+        challengeId,
+        flag: flagCandidate,
+        reason: `flag "${flagCandidate}" does not match regex ${flagRegex}`,
+        evidence,
+      };
+    }
   }
 
   if (!evidence || !evidence.includes(flagCandidate)) {
@@ -73,6 +75,16 @@ export function verifyResult(
       challengeId,
       flag: flagCandidate,
       reason: "flag not found in evidence string",
+      evidence,
+    };
+  }
+
+  if (!flagRegex) {
+    return {
+      verified: false,
+      challengeId,
+      flag: flagCandidate,
+      reason: "no flag regex was supplied; candidate is backed by tool output but needs manual verification",
       evidence,
     };
   }

@@ -2,7 +2,7 @@
 
 ## Current behavior
 
-This TypeScript app is controlled through Telegram. It fetches CTFd challenge data, runs a tool-using LLM solver in Docker, verifies candidates against the selected flag regex and captured tool evidence, persists runs and results in PostgreSQL, and sends verified flags to authorized Telegram users. **Flag submission is manual. The bot has no `/submit` command; the HTTP tool blocks the standard CTFd challenge-attempt endpoint.**
+This TypeScript app is controlled through Telegram. It fetches CTFd challenge data, runs a tool-using LLM solver in Docker, checks candidate flags against an optional regex and captured tool evidence, persists runs and results in PostgreSQL, and sends flags to authorized Telegram users. Without a regex, detected candidates remain unverified for manual review. **Flag submission is manual. The bot has no `/submit` command; the HTTP tool blocks the standard CTFd challenge-attempt endpoint.**
 
 The bot replies to unknown commands and command-handler failures. Verified results are pushed as soon as a challenge finishes; challenge and run failures are also sent to Telegram. `/flags` separates verified flags from unverified candidates.
 
@@ -25,7 +25,7 @@ The database creates its tables on first use. Provider models default to OpenRou
 - `src/agent/solver.ts` — per-challenge LLM loop and tool-output flag detection.
 - `src/agent/container.ts` — Docker sandbox lifecycle.
 - `src/providers/` — OpenAI-compatible OpenRouter and NVIDIA NIM clients plus failover router.
-- `src/verify.ts` — pure candidate regex/evidence verification.
+- `src/verify.ts` — candidate evidence checks and optional regex verification.
 
 ## Operational limitations to address separately
 

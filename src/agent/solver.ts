@@ -45,7 +45,9 @@ ${connInfo}${files}
 ${challenge.description}
 
 ## Flag Format
-The flag matches this regex: ${flagRegex}
+${flagRegex
+    ? `The flag matches this regex: ${flagRegex}`
+    : "No flag regex was provided. Look for common PREFIX{value} flag formats or values explicitly labeled as a flag. Only report a candidate if it appears literally in tool output; do not invent one."}
 
 ## Instructions
 - Use the provided tools to explore files, run commands, and interact with services.
@@ -57,14 +59,23 @@ The flag matches this regex: ${flagRegex}
 - You have a limited number of steps; be efficient.`;
 }
 
-function extractFlag(text: string, flagRegex: string): string | null {
-  try {
-    const re = new RegExp(flagRegex, "g");
-    const matches = text.match(re);
-    return matches ? matches[0] : null;
-  } catch {
-    return null;
+function extractFlag(text: string, flagRegex?: string | null): string | null {
+  if (flagRegex) {
+    try {
+      const matches = text.match(new RegExp(flagRegex, "g"));
+      return matches ? matches[0] : null;
+    } catch {
+      return null;
+    }
   }
+
+  // Without a challenge-specific pattern, recognize common braced formats
+  // and values explicitly labeled as flags or tokens.
+  const commonFlag = text.match(/\b[A-Za-z][A-Za-z0-9_.-]{0,31}\{[^{}\r\n]{1,256}\}/);
+  if (commonFlag) return commonFlag[0];
+
+  const labeledFlag = text.match(/\b(?:flag|token)\s*(?:is\s*)?[:=]\s*[`"']?([^\s`"'<>]{4,256})/i);
+  return labeledFlag?.[1] ?? null;
 }
 
 export async function solveChallenge(cfg: SolverConfig): Promise<SolverResult> {

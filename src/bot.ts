@@ -74,6 +74,15 @@ runner.on("run:error", async (err: Error) => {
   }
 });
 
+runner.on("flag:unverified", async ({ challengeName, flag, reason }: { challengeId: number; challengeName: string; flag: string | null; reason: string; evidence: string | null }) => {
+  const msg =
+    `⚠️ Flag candidate — ${challengeName}\n` +
+    `Flag: ${flag ?? "not identified"}\n` +
+    `${reason}\n` +
+    `Review the captured evidence and submit manually if correct.`;
+  for (const userId of allowedIds) await bot.api.sendMessage(userId, msg).catch(() => {});
+});
+
 runner.on("challenge:error", async ({ challengeId, name, error }: { challengeId: number; name: string; error: string }) => {
   const message = `❌ Challenge error — [${challengeId}] ${name}\n${error.slice(0, 1000)}`;
   for (const userId of allowedIds) await bot.api.sendMessage(userId, message).catch(() => {});
@@ -91,7 +100,8 @@ bot.catch(async (err) => {
 /**
  * /start_run <ctf_base_url> <token> [flag_regex]
  *
- * Starts a solving run. flag_regex defaults to a common CTF pattern.
+ * Starts a solving run. Without a regex, common flag patterns are detected
+ * and candidates are sent for manual verification.
  */
 bot.command("start_run", async (ctx: Context) => {
   const parts = ctx.message?.text?.split(/\s+/) ?? [];
@@ -106,7 +116,17 @@ bot.command("start_run", async (ctx: Context) => {
 
   const ctfBaseUrl = parts[1];
   const token = parts[2];
-  const flagRegex = parts[3] ?? "flag\\{[^}]+\\}";
+  const regexArg = parts[3]?.trim();
+  const flagRegex = regexArg && regexArg !== "[]" ? regexArg : undefined;
+
+  if (flagRegex) {
+    try {
+      new RegExp(flagRegex);
+    } catch {
+      await ctx.reply("❌ Invalid flag regex. Omit it for automatic flag detection.");
+      return;
+    }
+  }
 
   // Validate URL
   try {
@@ -124,7 +144,9 @@ bot.command("start_run", async (ctx: Context) => {
       createdBy: ctx.from!.id,
     });
     await ctx.reply(
-      `🚀 Run started!\nID: ${runId}\nCTF: ${ctfBaseUrl}\nFlag regex: ${flagRegex}\n\nUse /status to track progress. Found flags will be sent here for manual submission.`
+      `🚀 Run started!\nID: ${runId}\nCTF: ${ctfBaseUrl}\n` +
+        `Flag detection: ${flagRegex ? `regex ${flagRegex}` : "automatic (candidates need manual verification)"}\n\n` +
+        `Use /status to track progress. Found flags will be sent here for manual submission.`
     );
   } catch (err) {
     await ctx.reply(`❌ Failed to start run: ${(err as Error).message}`);
@@ -230,7 +252,7 @@ bot.command("stop", async (ctx: Context) => {
 bot.command("help", async (ctx: Context) => {
   await ctx.reply(
     `*CTF Bot Commands*\n\n` +
-      `/start_run <url> <token> [flag_regex] — Start solving a CTF\n` +
+      `/start_run <url> <token> [flag_regex] — Start solving (regex optional)\n` +
       `/status — Show current run progress\n` +
       `/flags — List found flag candidates for manual CTFd submission\n` +
       `/stop — Cancel the active run\n` +

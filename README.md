@@ -15,7 +15,7 @@ Default model configuration uses OpenRouter's `openrouter/free` route and NVIDIA
 
 ## Telegram commands
 
-- `/start_run <ctf_base_url> <token> [flag_regex]` starts a challenge run.
+- `/start_run <ctf_base_url> <token> [flag_regex]` starts a challenge run. The regex is optional; without it, common flag formats are detected and candidates are sent for manual verification.
 - `/status` shows the latest run's queued, running, found, unverified, and failed counts.
 - `/flags` lists verified flags separately from unverified candidates, including the reason when available.
 - `/stop` stops the active run and its containers.
